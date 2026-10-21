@@ -1,0 +1,16 @@
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/reports.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+/reports/*
+  Cache-Control: public, max-age=0, must-revalidate
+
+/assets/*
+  Cache-Control: public, max-age=0, must-revalidate
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  X-Frame-Options: SAMEORIGIN
