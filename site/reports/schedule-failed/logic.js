@@ -431,7 +431,7 @@
                 let ssf = ssfOf(inst), as = "";
                 if (regular) {
                     ssf = ABSORB;
-                    as = nh(asBefore) === nh(CFG.AS_EMER) || ssfOf(before) === NOT_ABSORB ? CFG.AS_EMER : CFG.AS_FEEDBACK;
+                    as = nh(asBefore) === nh(CFG.AS_EMER) || ssfOf(before) === NOT_ABSORB && !t ? CFG.AS_EMER : CFG.AS_FEEDBACK;
                 }
                 return {
                     v: [ inst, ssf, as ].concat(vals),
