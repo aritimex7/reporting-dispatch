@@ -429,7 +429,7 @@
                 const asBefore = pAs == null ? "" : clean(a[pAs]);
                 const regular = pTt != null && nh(a[pTt]) === nh(CFG.EMER_TASK_TYPE);
                 let as = "";
-                if (regular) as = nh(asBefore) === nh(CFG.AS_EMER) || ssfOf(before) === NOT_ABSORB ? CFG.AS_EMER : ssf === ABSORB ? CFG.AS_FEEDBACK : "";
+                if (regular) as = nh(asBefore) === nh(CFG.AS_EMER) || ssfOf(before) === NOT_ABSORB && ssf === ABSORB ? CFG.AS_EMER : ssf === ABSORB ? CFG.AS_FEEDBACK : "";
                 return {
                     v: [ inst, ssf, as ].concat(vals),
                     i: i,
