@@ -25,6 +25,11 @@ DISPATCH.pane("schedule-failed", `
           <span class="sf-name" id="sf-n-inp">export Inprogress .xlsx</span>
           <button class="sf-pick" data-k="inp">Pilih</button>
         </div>
+        <div class="sf-slot">
+          <span class="sf-tag">Output lama</span>
+          <span class="sf-name" id="sf-n-prv">SCHEDULE FAILED sebelumnya, opsional · untuk update</span>
+          <button class="sf-pick" data-k="prv">Pilih</button>
+        </div>
 
         <div class="actions">
           <button class="btn btn-primary" id="sf-run" disabled>Proses</button>
