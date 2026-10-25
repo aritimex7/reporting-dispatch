@@ -9,6 +9,7 @@
         INSTALLER_EXCLUDE_STATUS: [ "Dispatched" ],
         INSTALLER_EMPTY: "-",
         PREV_KEEP_INSTALLER: true,
+        TAKEOUT_SCHEDULE_DAY: 1,
         PIVOTS: [ {
             name: "Regular",
             col: 1,
@@ -84,6 +85,59 @@
         return x < y ? -1 : x > y ? 1 : 0;
     };
     const ssfOf = inst => inst === "" || inst === "-" ? NOT_ABSORB : ABSORB;
+    const BLN = {
+        jan: 1,
+        feb: 2,
+        mar: 3,
+        apr: 4,
+        may: 5,
+        mei: 5,
+        jun: 6,
+        jul: 7,
+        aug: 8,
+        agu: 8,
+        agt: 8,
+        sep: 9,
+        oct: 10,
+        okt: 10,
+        nov: 11,
+        dec: 12,
+        des: 12
+    };
+    const keyOf = d => d.getFullYear() * 1e4 + (d.getMonth() + 1) * 100 + d.getDate();
+    function dayKey(v) {
+        const s = clean(v);
+        let m, y, mo, d;
+        if (!s) return null;
+        if (/^\d+(\.\d+)?$/.test(s)) {
+            const n = +s;
+            if (n < 2e4 || n > 8e4) return null;
+            const t = new Date(Date.UTC(1899, 11, 30) + Math.floor(n) * 864e5);
+            return t.getUTCFullYear() * 1e4 + (t.getUTCMonth() + 1) * 100 + t.getUTCDate();
+        }
+        if (m = /^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/.exec(s)) {
+            y = +m[1];
+            mo = +m[2];
+            d = +m[3];
+        } else if (m = /^(\d{1,2})[-\/. ]([A-Za-z]{3})[A-Za-z]*[-\/. ,]+(\d{2,4})/.exec(s)) {
+            d = +m[1];
+            mo = BLN[m[2].toLowerCase()];
+            y = +m[3];
+        } else if (m = /^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})/.exec(s)) {
+            const a = +m[1], b = +m[2];
+            if (b > 12 && a <= 12) {
+                mo = a;
+                d = b;
+            } else {
+                d = a;
+                mo = b;
+            }
+            y = +m[3];
+        } else return null;
+        if (y < 100) y += 2e3;
+        if (!mo || mo > 12 || d < 1 || d > 31) return null;
+        return y * 1e4 + mo * 100 + d;
+    }
     async function readBook(file, sheetRows) {
         return XLSX.read(new Uint8Array(await file.arrayBuffer()), sheetRows ? {
             type: "array",
@@ -291,11 +345,36 @@
         const inc = CFG.FIELD_SERVICE_INCLUDE.map(nh);
         const dFs = colOf(D, "Field Service"), dAcct = colOf(D, CFG.INSTALLER_KEY);
         const out = [], buang = {};
+        const dSch = colOf(D, "Schedule Date"), base = stampOf(files.dsp.name);
+        const hDay = new Date(base.getFullYear(), base.getMonth(), base.getDate() + CFG.TAKEOUT_SCHEDULE_DAY);
+        const sch = {
+            on: dSch >= 0 && CFG.TAKEOUT_SCHEDULE_DAY != null,
+            key: keyOf(hDay),
+            date: hDay,
+            out: 0,
+            bad: 0,
+            badEx: []
+        };
+        if (dSch < 0) alerts.push({
+            t: "Kolom Schedule Date nggak ada di Dispatching",
+            d: "filter H+1 dilewati"
+        });
         D.rows.forEach(a => {
             const fs = clean(a[dFs]);
             if (inc.indexOf(nh(fs)) < 0) {
                 buang[fs || "(kosong)"] = (buang[fs || "(kosong)"] || 0) + 1;
                 return;
+            }
+            if (sch.on) {
+                const raw = clean(a[dSch]), k = dayKey(raw);
+                if (k === sch.key) {
+                    sch.out++;
+                    return;
+                }
+                if (k === null && raw) {
+                    sch.bad++;
+                    if (sch.badEx.length < 3 && sch.badEx.indexOf(raw) < 0) sch.badEx.push(raw);
+                }
             }
             const vals = D.cols.map(c => {
                 const v = a[c.src];
@@ -308,6 +387,10 @@
                 i: out.length,
                 acct: clean(a[dAcct])
             });
+        });
+        if (sch.bad) alerts.push({
+            t: "Format Schedule Date nggak dikenali, baris tetap dimasukkan (filter H+1 nggak berlaku untuk baris ini)",
+            d: sch.bad + " baris · contoh " + sch.badEx.join(" | ")
         });
         let upd = null;
         if (files.prv) {
@@ -376,6 +459,7 @@
             alerts: alerts,
             tally: tally,
             buang: buang,
+            sch: sch,
             upd: upd,
             skipped: skipped,
             dName: D.name,
@@ -501,7 +585,7 @@
         $("pv").innerHTML = r.pivots.length ? r.pivots.map(pvHtml).join("") : '<div class="sf-empty">Nggak ada baris yang lolos filter Field Service — pivot dilewati.</div>';
         const bu = Object.keys(r.buang).map(k => k + " " + r.buang[k]).join(" · ");
         const u = r.upd;
-        $("pnote").innerHTML = "<b>Nama file:</b> " + esc(outName() + ".xlsx") + (u ? "<br><b>Update dari " + esc(u.name) + ":</b> " + u.lama + " baris lama diperbarui (INSTALLER berubah " + u.ganti + ", jadi ABSORB " + u.jadiAbsorb + ") · " + u.baru + " baris baru ditambahkan · " + u.skip + " baris Dispatching dilewati karena Customer Account sudah ada" : "") + "<br><b>Dibuang (Field Service):</b> " + esc(bu || "tidak ada") + "<br><b>Inprogress:</b> " + r.iRows + " baris, " + r.skipped + " baris Dispatched dilewati saat lookup INSTALLER" + "<br><b>Pivot:</b> 2 PivotTable asli di " + CFG.SHEET_PIVOT + ", ditandai refresh-saat-dibuka. Angka final dihitung ulang oleh Excel waktu file dibuka.";
+        $("pnote").innerHTML = "<b>Nama file:</b> " + esc(outName() + ".xlsx") + (u ? "<br><b>Update dari " + esc(u.name) + ":</b> " + u.lama + " baris lama diperbarui (INSTALLER berubah " + u.ganti + ", jadi ABSORB " + u.jadiAbsorb + ") · " + u.baru + " baris baru ditambahkan · " + u.skip + " baris Dispatching dilewati karena Customer Account sudah ada" : "") + "<br><b>Dibuang (Field Service):</b> " + esc(bu || "tidak ada") + (r.sch.on ? "<br><b>Schedule Date H+1 (" + fmtDate(r.sch.date) + ") ditakeout:</b> " + r.sch.out + " baris" : "") +"<br><b>Inprogress:</b> " + r.iRows + " baris, " + r.skipped + " baris Dispatched dilewati saat lookup INSTALLER" + "<br><b>Pivot:</b> 2 PivotTable asli di " + CFG.SHEET_PIVOT + ", ditandai refresh-saat-dibuka. Angka final dihitung ulang oleh Excel waktu file dibuka.";
     }
     function pvHtml(p) {
         const y = c => p.colsP[c][0] === p.naPos ? ' class="y"' : "";
@@ -522,9 +606,11 @@
         }
         return new Date;
     }
+    const p2 = n => String(n).padStart(2, "0");
+    const fmtDate = d => p2(d.getDate()) + "." + p2(d.getMonth() + 1) + "." + d.getFullYear();
     function outName() {
-        const d = stampOf(files.dsp && files.dsp.name), p = n => String(n).padStart(2, "0");
-        return "SCHEDULE FAILED TGL " + p(d.getDate()) + "." + p(d.getMonth() + 1) + "." + d.getFullYear() + " UPDATE JAM " + p(d.getHours()) + "." + p(d.getMinutes());
+        const d = stampOf(files.dsp && files.dsp.name);
+        return "SCHEDULE FAILED TGL " + fmtDate(d) + " UPDATE JAM " + p2(d.getHours()) + "." + p2(d.getMinutes());
     }
     $("save").addEventListener("click", async () => {
         const b = $("save");
