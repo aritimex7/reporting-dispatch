@@ -367,7 +367,7 @@
             }
             if (sch.on) {
                 const raw = clean(a[dSch]), k = dayKey(raw);
-                if (k === sch.key) {
+                if (k !== null && k >= sch.key) {
                     sch.out++;
                     return;
                 }
@@ -585,7 +585,7 @@
         $("pv").innerHTML = r.pivots.length ? r.pivots.map(pvHtml).join("") : '<div class="sf-empty">Nggak ada baris yang lolos filter Field Service — pivot dilewati.</div>';
         const bu = Object.keys(r.buang).map(k => k + " " + r.buang[k]).join(" · ");
         const u = r.upd;
-        $("pnote").innerHTML = "<b>Nama file:</b> " + esc(outName() + ".xlsx") + (u ? "<br><b>Update dari " + esc(u.name) + ":</b> " + u.lama + " baris lama diperbarui (INSTALLER berubah " + u.ganti + ", jadi ABSORB " + u.jadiAbsorb + ") · " + u.baru + " baris baru ditambahkan · " + u.skip + " baris Dispatching dilewati karena Customer Account sudah ada" : "") + "<br><b>Dibuang (Field Service):</b> " + esc(bu || "tidak ada") + (r.sch.on ? "<br><b>Schedule Date H+1 (" + fmtDate(r.sch.date) + ") ditakeout:</b> " + r.sch.out + " baris" : "") +"<br><b>Inprogress:</b> " + r.iRows + " baris, " + r.skipped + " baris Dispatched dilewati saat lookup INSTALLER" + "<br><b>Pivot:</b> 2 PivotTable asli di " + CFG.SHEET_PIVOT + ", ditandai refresh-saat-dibuka. Angka final dihitung ulang oleh Excel waktu file dibuka.";
+        $("pnote").innerHTML = "<b>Nama file:</b> " + esc(outName() + ".xlsx") + (u ? "<br><b>Update dari " + esc(u.name) + ":</b> " + u.lama + " baris lama diperbarui (INSTALLER berubah " + u.ganti + ", jadi ABSORB " + u.jadiAbsorb + ") · " + u.baru + " baris baru ditambahkan · " + u.skip + " baris Dispatching dilewati karena Customer Account sudah ada" : "") + "<br><b>Dibuang (Field Service):</b> " + esc(bu || "tidak ada") + (r.sch.on ? "<br><b>Schedule Date H+1 dan seterusnya (mulai " + fmtDate(r.sch.date) + ") ditakeout:</b> " + r.sch.out + " baris" : "") +"<br><b>Inprogress:</b> " + r.iRows + " baris, " + r.skipped + " baris Dispatched dilewati saat lookup INSTALLER" + "<br><b>Pivot:</b> 2 PivotTable asli di " + CFG.SHEET_PIVOT + ", ditandai refresh-saat-dibuka. Angka final dihitung ulang oleh Excel waktu file dibuka.";
     }
     function pvHtml(p) {
         const y = c => p.colsP[c][0] === p.naPos ? ' class="y"' : "";
