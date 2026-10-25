@@ -388,10 +388,6 @@
                 acct: clean(a[dAcct])
             });
         });
-        if (sch.bad) alerts.push({
-            t: "Format Schedule Date nggak dikenali, baris tetap dimasukkan (filter H+1 nggak berlaku untuk baris ini)",
-            d: sch.bad + " baris · contoh " + sch.badEx.join(" | ")
-        });
         let upd = null;
         if (files.prv) {
             const P = await readPrev(files.prv), pi = P.idx;
@@ -401,8 +397,21 @@
                 t: "Kolom di output lama nggak lengkap, dibiarkan kosong untuk baris lama",
                 d: miss.join(", ")
             });
-            const lama = new Set();
-            const old = P.rows.map((a, i) => {
+            const lama = new Set(), pSch = pi[nh("Schedule Date")];
+            let lamaOut = 0;
+            const old = P.rows.filter(a => {
+                if (!sch.on || pSch == null) return true;
+                const raw = clean(a[pSch]), k = dayKey(raw);
+                if (k !== null && k >= sch.key) {
+                    lamaOut++;
+                    return false;
+                }
+                if (k === null && raw) {
+                    sch.bad++;
+                    if (sch.badEx.length < 3 && sch.badEx.indexOf(raw) < 0) sch.badEx.push(raw);
+                }
+                return true;
+            }).map((a, i) => {
                 const acct = clean(a[pAcct]);
                 lama.add(acct);
                 const vals = D.cols.map(c => {
@@ -423,6 +432,7 @@
             upd = {
                 name: P.name,
                 lama: old.length,
+                lamaOut: lamaOut,
                 baru: baru.length,
                 skip: out.length - baru.length,
                 ganti: old.filter(o => o.v[0] !== o.before).length,
@@ -432,6 +442,10 @@
             out.length = 0;
             old.concat(baru).forEach(o => out.push(o));
         }
+        if (sch.bad) alerts.push({
+            t: "Format Schedule Date nggak dikenali, baris tetap dimasukkan (filter H+1 nggak berlaku untuk baris ini)",
+            d: sch.bad + " baris · contoh " + sch.badEx.join(" | ")
+        });
         out.sort((x, y) => cmp(x.v[1], y.v[1]) || cmp(x.v[0], y.v[0]) || x.i - y.i);
         const names = [ F_INST, F_SSF ].concat(D.cols.map(c => c.name));
         const rows = out.map(o => o.v);
@@ -585,7 +599,7 @@
         $("pv").innerHTML = r.pivots.length ? r.pivots.map(pvHtml).join("") : '<div class="sf-empty">Nggak ada baris yang lolos filter Field Service — pivot dilewati.</div>';
         const bu = Object.keys(r.buang).map(k => k + " " + r.buang[k]).join(" · ");
         const u = r.upd;
-        $("pnote").innerHTML = "<b>Nama file:</b> " + esc(outName() + ".xlsx") + (u ? "<br><b>Update dari " + esc(u.name) + ":</b> " + u.lama + " baris lama diperbarui (INSTALLER berubah " + u.ganti + ", jadi ABSORB " + u.jadiAbsorb + ") · " + u.baru + " baris baru ditambahkan · " + u.skip + " baris Dispatching dilewati karena Customer Account sudah ada" : "") + "<br><b>Dibuang (Field Service):</b> " + esc(bu || "tidak ada") + (r.sch.on ? "<br><b>Schedule Date H+1 dan seterusnya (mulai " + fmtDate(r.sch.date) + ") ditakeout:</b> " + r.sch.out + " baris" : "") +"<br><b>Inprogress:</b> " + r.iRows + " baris, " + r.skipped + " baris Dispatched dilewati saat lookup INSTALLER" + "<br><b>Pivot:</b> 2 PivotTable asli di " + CFG.SHEET_PIVOT + ", ditandai refresh-saat-dibuka. Angka final dihitung ulang oleh Excel waktu file dibuka.";
+        $("pnote").innerHTML = "<b>Nama file:</b> " + esc(outName() + ".xlsx") + (u ? "<br><b>Update dari " + esc(u.name) + ":</b> " + u.lama + " baris lama diperbarui (INSTALLER berubah " + u.ganti + ", jadi ABSORB " + u.jadiAbsorb + ") · " + (u.lamaOut ? u.lamaOut + " baris lama dibuang karena Schedule Date H+1 dst · " : "") + u.baru + " baris baru ditambahkan · " + u.skip + " baris Dispatching dilewati karena Customer Account sudah ada" : "") + "<br><b>Dibuang (Field Service):</b> " + esc(bu || "tidak ada") + (r.sch.on ? "<br><b>Schedule Date H+1 dan seterusnya (mulai " + fmtDate(r.sch.date) + ") ditakeout:</b> " + r.sch.out + " baris" : "") +"<br><b>Inprogress:</b> " + r.iRows + " baris, " + r.skipped + " baris Dispatched dilewati saat lookup INSTALLER" + "<br><b>Pivot:</b> 2 PivotTable asli di " + CFG.SHEET_PIVOT + ", ditandai refresh-saat-dibuka. Angka final dihitung ulang oleh Excel waktu file dibuka.";
     }
     function pvHtml(p) {
         const y = c => p.colsP[c][0] === p.naPos ? ' class="y"' : "";
