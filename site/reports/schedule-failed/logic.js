@@ -21,7 +21,7 @@
         } ],
         PIVOT_FILTER_DEFAULT: {
             jobTask: "(All)",
-            taskStatus: "Open"
+            taskStatus: "(All)"
         },
         HIGHLIGHT_NOT_ABSORB: "FFFFFF00"
     };
