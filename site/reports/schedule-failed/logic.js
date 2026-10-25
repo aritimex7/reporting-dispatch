@@ -16,6 +16,7 @@
         AS_EMER: "Done Assign Emergency Insert",
         AS_FEEDBACK: "Done Assign Feedback Field",
         EMER_TASK_TYPE: "Regular Task",
+        SAMEDAY_TASK_TYPE: "Sameday Task",
         PIVOTS: [ {
             name: "Regular",
             taskType: "Regular Task",
@@ -443,7 +444,37 @@
                 };
             });
             const baru = out.filter(o => !lama.has(o.acct));
+            const vi = n => {
+                const k = D.cols.findIndex(c => nh(c.name) === nh(n));
+                return k < 0 ? -1 : k + 3;
+            };
+            const ttI = vi("Task Type"), ctI = vi("Create Time"), today = keyOf(base);
+            let jadiSameday = 0, emerBaruNew = 0, ctBad = 0;
+            if (ctI < 0) alerts.push({
+                t: "Kolom Create Time nggak ada di Dispatching",
+                d: "cek Create Time hari ini → Sameday dilewati"
+            });
+            baru.forEach(o => {
+                if (nh(o.v[ttI]) !== nh(CFG.EMER_TASK_TYPE)) return;
+                const ck = ctI < 0 ? null : dayKey(o.v[ctI]);
+                if (ctI >= 0 && ck === null && clean(o.v[ctI])) ctBad++;
+                if (ck === today) {
+                    o.v[ttI] = CFG.SAMEDAY_TASK_TYPE;
+                    o.v[2] = "";
+                    jadiSameday++;
+                } else if (o.v[1] === NOT_ABSORB) {
+                    o.v[1] = ABSORB;
+                    o.v[2] = CFG.AS_EMER;
+                    emerBaruNew++;
+                }
+            });
+            if (ctBad) alerts.push({
+                t: "Format Create Time nggak dikenali, baris dianggap bukan hari ini",
+                d: ctBad + " baris"
+            });
             upd = {
+                jadiSameday: jadiSameday,
+                emerBaruNew: emerBaruNew,
                 name: P.name,
                 lama: old.length,
                 lamaOut: lamaOut,
@@ -632,7 +663,7 @@
         $("pv").innerHTML = r.pivots.length ? r.pivots.map(pvHtml).join("") : '<div class="sf-empty">Nggak ada baris yang lolos filter — pivot dilewati.</div>';
         const bu = Object.keys(r.buang).map(k => k + " " + r.buang[k]).join(" · ");
         const u = r.upd;
-        $("pnote").innerHTML = "<b>Nama file:</b> " + esc(outName() + ".xlsx") + (u ? "<br><b>Update dari " + esc(u.name) + ":</b> " + u.lama + " baris lama diperbarui (INSTALLER berubah " + u.ganti + ", jadi ABSORB " + u.jadiAbsorb + ", Emergency Insert baru " + u.emerBaru + ") · " + (u.lamaOut ? u.lamaOut + " baris lama dibuang karena Schedule Date H+1 dst · " : "") + u.baru + " baris baru ditambahkan · " + u.skip + " baris Dispatching dilewati karena Customer Account sudah ada" : "") + "<br><b>Dibuang (Field Service):</b> " + esc(bu || "tidak ada") + (r.sch.on ? "<br><b>Schedule Date H+1 dan seterusnya (mulai " + fmtDate(r.sch.date) + ") ditakeout:</b> " + r.sch.out + " baris" : "") + "<br><b>" + esc(CFG.SHEET_EMER) + ":</b> " + t.emerSheet + " baris (Regular Task, " + esc(CFG.AS_EMER) + ")" + "<br><b>Inprogress:</b> " + r.iRows + " baris, " + r.skipped + " baris Dispatched dilewati saat lookup INSTALLER" + "<br><b>Pivot:</b> PivotTable asli di " + esc(CFG.SHEET_PIVOT) + " dan " + esc(CFG.SHEET_EMER_PIVOT) + ", ditandai refresh-saat-dibuka. Angka final dihitung ulang oleh Excel waktu file dibuka.";
+        $("pnote").innerHTML = "<b>Nama file:</b> " + esc(outName() + ".xlsx") + (u ? "<br><b>Update dari " + esc(u.name) + ":</b> " + u.lama + " baris lama diperbarui (INSTALLER berubah " + u.ganti + ", jadi ABSORB " + u.jadiAbsorb + ", Emergency Insert baru " + u.emerBaru + ") · " + (u.lamaOut ? u.lamaOut + " baris lama dibuang karena Schedule Date H+1 dst · " : "") + u.baru + " baris baru ditambahkan (Regular Create Time hari ini → Sameday " + u.jadiSameday + ", Regular tanpa team → Emergency Insert " + u.emerBaruNew + ") · " + u.skip + " baris Dispatching dilewati karena Customer Account sudah ada" : "") + "<br><b>Dibuang (Field Service):</b> " + esc(bu || "tidak ada") + (r.sch.on ? "<br><b>Schedule Date H+1 dan seterusnya (mulai " + fmtDate(r.sch.date) + ") ditakeout:</b> " + r.sch.out + " baris" : "") + "<br><b>" + esc(CFG.SHEET_EMER) + ":</b> " + t.emerSheet + " baris (Regular Task, " + esc(CFG.AS_EMER) + ")" + "<br><b>Inprogress:</b> " + r.iRows + " baris, " + r.skipped + " baris Dispatched dilewati saat lookup INSTALLER" + "<br><b>Pivot:</b> PivotTable asli di " + esc(CFG.SHEET_PIVOT) + " dan " + esc(CFG.SHEET_EMER_PIVOT) + ", ditandai refresh-saat-dibuka. Angka final dihitung ulang oleh Excel waktu file dibuka.";
     }
     function pvHtml(p) {
         let h = '<div class="sf-sect-t"><span>Pivot ' + esc(p.name) + "</span><span>" + (p.pages.length ? p.pages.map(g => esc(g.label + ": " + g.show)).join(" · ") : esc(p.sheet)) + "</span></div>";
