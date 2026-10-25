@@ -13,4 +13,8 @@ var REPORTS = [ {
     id: "operation",
     label: "Operation",
     css: true
+}, {
+    id: "schedule-failed",
+    label: "Schedule Failed",
+    css: true
 } ];
