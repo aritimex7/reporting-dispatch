@@ -27,7 +27,7 @@ DISPATCH.pane("schedule-failed", `
         </div>
         <div class="sf-slot">
           <span class="sf-tag">Output lama</span>
-          <span class="sf-name" id="sf-n-prv">SCHEDULE FAILED sebelumnya, opsional · untuk update</span>
+          <span class="sf-name" id="sf-n-prv">Schedule Failed sebelumnya, opsional · untuk update</span>
           <button class="sf-pick" data-k="prv">Pilih</button>
         </div>
 
