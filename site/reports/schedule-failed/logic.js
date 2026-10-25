@@ -425,11 +425,14 @@
                     return trim[c.src] ? clean(v) : v == null ? "" : String(v);
                 });
                 const before = clean(a[pInst]) || CFG.INSTALLER_EMPTY, t = tech.get(acct);
-                const inst = t ? t : CFG.PREV_KEEP_INSTALLER ? before : CFG.INSTALLER_EMPTY, ssf = ssfOf(inst);
+                const inst = t ? t : CFG.PREV_KEEP_INSTALLER ? before : CFG.INSTALLER_EMPTY;
                 const asBefore = pAs == null ? "" : clean(a[pAs]);
                 const regular = pTt != null && nh(a[pTt]) === nh(CFG.EMER_TASK_TYPE);
-                let as = "";
-                if (regular) as = nh(asBefore) === nh(CFG.AS_EMER) || ssfOf(before) === NOT_ABSORB && ssf === ABSORB ? CFG.AS_EMER : ssf === ABSORB ? CFG.AS_FEEDBACK : "";
+                let ssf = ssfOf(inst), as = "";
+                if (regular) {
+                    ssf = ABSORB;
+                    as = nh(asBefore) === nh(CFG.AS_EMER) || ssfOf(before) === NOT_ABSORB ? CFG.AS_EMER : CFG.AS_FEEDBACK;
+                }
                 return {
                     v: [ inst, ssf, as ].concat(vals),
                     i: i,
