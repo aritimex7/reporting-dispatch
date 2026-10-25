@@ -1,8 +1,11 @@
 (function() {
     "use strict";
     const CFG = {
-        SHEET_DATA: "Sheet0",
-        SHEET_PIVOT: "Sheet4",
+        SHEET_DATA: "SCH FAILED",
+        SHEET_PIVOT: "PIVOT SCH FAILED",
+        SHEET_EMER: "EMER INSERT BY DISPATCH",
+        SHEET_EMER_PIVOT: "PIVOT EMER INSERT",
+        EMER_TITLE: "ASSIGN EMERGENCY INSERT BY DISPATCH",
         FIELD_SERVICE_INCLUDE: [ "Install", "Trouble Call", "Movement" ],
         INSTALLER_KEY: "Customer Account",
         INSTALLER_SOURCE_COL: "Techician Code",
@@ -10,20 +13,19 @@
         INSTALLER_EMPTY: "-",
         PREV_KEEP_INSTALLER: true,
         TAKEOUT_SCHEDULE_DAY: 1,
+        AS_EMER: "Done Assign Emergency Insert",
+        AS_FEEDBACK: "Done Assign Feedback Field",
+        EMER_TASK_TYPE: "Regular Task",
         PIVOTS: [ {
             name: "Regular",
-            col: 1,
-            taskType: "Regular Task"
+            taskType: "Regular Task",
+            cols: [ "Status SF", "Assignment Status", "Field Service" ]
         }, {
             name: "Sameday",
-            col: 9,
-            taskType: "Sameday Task"
+            taskType: "Sameday Task",
+            cols: [ "Status SF", "Field Service" ]
         } ],
-        PIVOT_FILTER_DEFAULT: {
-            jobTask: "(All)",
-            taskStatus: "(All)"
-        },
-        HIGHLIGHT_NOT_ABSORB: "FFFFFF00"
+        HIGHLIGHT: "FFFFFF00"
     };
     const NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
     const RNS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -34,7 +36,7 @@
     const D_NEED = [ "Customer Account", "Field Service", "Service Territory", "Task Type", "Task Status", "Job Task" ];
     const I_NEED = [ "Customer Account", "Task Status", "Techician Code" ];
     const ABSORB = "ABSORB", NOT_ABSORB = "NOT ABSORB";
-    const F_INST = "INSTALLER", F_SSF = "Status SF";
+    const F_INST = "Installer", F_SSF = "Status SF", F_AS = "Assignment Status";
     function clean(v) {
         return String(v == null ? "" : v).replace(/_x000D_/g, "").replace(/\r/g, "").trim();
     }
@@ -85,6 +87,10 @@
         return x < y ? -1 : x > y ? 1 : 0;
     };
     const ssfOf = inst => inst === "" || inst === "-" ? NOT_ABSORB : ABSORB;
+    const AS_RANK = {};
+    AS_RANK[CFG.AS_EMER] = 0;
+    AS_RANK[CFG.AS_FEEDBACK] = 1;
+    const asRank = v => AS_RANK[v] != null ? AS_RANK[v] : 2;
     const BLN = {
         jan: 1,
         feb: 2,
@@ -104,6 +110,7 @@
         dec: 12,
         des: 12
     };
+    const BULAN_PENDEK = [ "", "jan", "feb", "mar", "apr", "mei", "jun", "jul", "agu", "sep", "okt", "nov", "des" ];
     const keyOf = d => d.getFullYear() * 1e4 + (d.getMonth() + 1) * 100 + d.getDate();
     function dayKey(v) {
         const s = clean(v);
@@ -199,20 +206,25 @@
     const isPrevHdr = hdr => [ F_INST, F_SSF, CFG.INSTALLER_KEY ].every(n => hdr.indexOf(nh(n)) >= 0);
     async function readPrev(file) {
         const wb = await readBook(file);
+        let best = null;
         for (const sn of wb.SheetNames) {
             const aoa = aoaOf(wb.Sheets[sn]);
             if (!aoa.length || !isPrevHdr(aoa[0].map(nh))) continue;
-            const hdr = aoa[0].map(clean), idx = {};
-            hdr.forEach((h, i) => {
-                if (h && idx[nh(h)] == null) idx[nh(h)] = i;
-            });
-            return {
-                idx: idx,
-                rows: aoa.slice(1).filter(a => a.some(x => String(x).trim() !== "")),
-                name: file.name
-            };
+            const rows = aoa.slice(1).filter(a => a.some(x => String(x).trim() !== ""));
+            if (!best || rows.length > best.rows.length) {
+                const idx = {};
+                aoa[0].map(clean).forEach((h, i) => {
+                    if (h && idx[nh(h)] == null) idx[nh(h)] = i;
+                });
+                best = {
+                    idx: idx,
+                    rows: rows,
+                    name: file.name
+                };
+            }
         }
-        throw new Error(file.name + ": sheet data (kolom INSTALLER, Status SF, Customer Account) nggak ketemu — pastikan ini file output Schedule Failed");
+        if (!best) throw new Error(file.name + ": sheet data (kolom Installer, Status SF, Customer Account) nggak ketemu — pastikan ini file output Schedule Failed");
+        return best;
     }
     const files = {
         dsp: null,
@@ -343,7 +355,7 @@
         const trim = {};
         D_NEED.forEach(n => trim[colOf(D, n)] = true);
         const inc = CFG.FIELD_SERVICE_INCLUDE.map(nh);
-        const dFs = colOf(D, "Field Service"), dAcct = colOf(D, CFG.INSTALLER_KEY);
+        const dFs = colOf(D, "Field Service"), dAcct = colOf(D, CFG.INSTALLER_KEY), dTt = colOf(D, "Task Type");
         const out = [], buang = {};
         const dSch = colOf(D, "Schedule Date"), base = stampOf(files.dsp.name);
         const hDay = new Date(base.getFullYear(), base.getMonth(), base.getDate() + CFG.TAKEOUT_SCHEDULE_DAY);
@@ -355,6 +367,15 @@
             bad: 0,
             badEx: []
         };
+        const nextDay = raw => {
+            const k = dayKey(raw);
+            if (k !== null && k >= sch.key) return true;
+            if (k === null && raw) {
+                sch.bad++;
+                if (sch.badEx.length < 3 && sch.badEx.indexOf(raw) < 0) sch.badEx.push(raw);
+            }
+            return false;
+        };
         if (dSch < 0) alerts.push({
             t: "Kolom Schedule Date nggak ada di Dispatching",
             d: "filter H+1 dilewati"
@@ -365,25 +386,18 @@
                 buang[fs || "(kosong)"] = (buang[fs || "(kosong)"] || 0) + 1;
                 return;
             }
-            if (sch.on) {
-                const raw = clean(a[dSch]), k = dayKey(raw);
-                if (k !== null && k >= sch.key) {
-                    sch.out++;
-                    return;
-                }
-                if (k === null && raw) {
-                    sch.bad++;
-                    if (sch.badEx.length < 3 && sch.badEx.indexOf(raw) < 0) sch.badEx.push(raw);
-                }
+            if (sch.on && nextDay(clean(a[dSch]))) {
+                sch.out++;
+                return;
             }
             const vals = D.cols.map(c => {
                 const v = a[c.src];
                 return trim[c.src] ? clean(v) : v == null ? "" : String(v);
             });
             const t = tech.get(clean(a[dAcct]));
-            const inst = t ? t : CFG.INSTALLER_EMPTY;
+            const inst = t ? t : CFG.INSTALLER_EMPTY, ssf = ssfOf(inst);
             out.push({
-                v: [ inst, ssfOf(inst) ].concat(vals),
+                v: [ inst, ssf, ssf === ABSORB ? CFG.AS_FEEDBACK : "" ].concat(vals),
                 i: out.length,
                 acct: clean(a[dAcct])
             });
@@ -391,7 +405,7 @@
         let upd = null;
         if (files.prv) {
             const P = await readPrev(files.prv), pi = P.idx;
-            const pAcct = pi[nh(CFG.INSTALLER_KEY)], pInst = pi[nh(F_INST)], pSsf = pi[nh(F_SSF)];
+            const pAcct = pi[nh(CFG.INSTALLER_KEY)], pInst = pi[nh(F_INST)], pSsf = pi[nh(F_SSF)], pAs = pi[nh(F_AS)], pTt = pi[nh("Task Type")];
             const miss = D.cols.filter(c => pi[nh(c.name)] == null).map(c => c.name);
             if (miss.length) alerts.push({
                 t: "Kolom di output lama nggak lengkap, dibiarkan kosong untuk baris lama",
@@ -400,17 +414,9 @@
             const lama = new Set(), pSch = pi[nh("Schedule Date")];
             let lamaOut = 0;
             const old = P.rows.filter(a => {
-                if (!sch.on || pSch == null) return true;
-                const raw = clean(a[pSch]), k = dayKey(raw);
-                if (k !== null && k >= sch.key) {
-                    lamaOut++;
-                    return false;
-                }
-                if (k === null && raw) {
-                    sch.bad++;
-                    if (sch.badEx.length < 3 && sch.badEx.indexOf(raw) < 0) sch.badEx.push(raw);
-                }
-                return true;
+                if (!sch.on || pSch == null || !nextDay(clean(a[pSch]))) return true;
+                lamaOut++;
+                return false;
             }).map((a, i) => {
                 const acct = clean(a[pAcct]);
                 lama.add(acct);
@@ -419,13 +425,18 @@
                     return trim[c.src] ? clean(v) : v == null ? "" : String(v);
                 });
                 const before = clean(a[pInst]) || CFG.INSTALLER_EMPTY, t = tech.get(acct);
-                const inst = t ? t : CFG.PREV_KEEP_INSTALLER ? before : CFG.INSTALLER_EMPTY;
+                const inst = t ? t : CFG.PREV_KEEP_INSTALLER ? before : CFG.INSTALLER_EMPTY, ssf = ssfOf(inst);
+                const asBefore = pAs == null ? "" : clean(a[pAs]);
+                const regular = pTt != null && nh(a[pTt]) === nh(CFG.EMER_TASK_TYPE);
+                let as = "";
+                if (ssf === ABSORB) as = nh(asBefore) === nh(CFG.AS_EMER) || regular && ssfOf(before) === NOT_ABSORB ? CFG.AS_EMER : CFG.AS_FEEDBACK;
                 return {
-                    v: [ inst, ssfOf(inst) ].concat(vals),
+                    v: [ inst, ssf, as ].concat(vals),
                     i: i,
                     acct: acct,
                     before: before,
-                    ssfBefore: clean(a[pSsf])
+                    ssfBefore: clean(a[pSsf]),
+                    emerBaru: as === CFG.AS_EMER && nh(asBefore) !== nh(CFG.AS_EMER)
                 };
             });
             const baru = out.filter(o => !lama.has(o.acct));
@@ -436,7 +447,8 @@
                 baru: baru.length,
                 skip: out.length - baru.length,
                 ganti: old.filter(o => o.v[0] !== o.before).length,
-                jadiAbsorb: old.filter(o => o.v[1] === ABSORB && o.ssfBefore !== ABSORB).length
+                jadiAbsorb: old.filter(o => o.v[1] === ABSORB && o.ssfBefore !== ABSORB).length,
+                emerBaru: old.filter(o => o.emerBaru).length
             };
             baru.forEach((o, k) => o.i = old.length + k);
             out.length = 0;
@@ -446,29 +458,67 @@
             t: "Format Schedule Date nggak dikenali, baris tetap dimasukkan (filter H+1 nggak berlaku untuk baris ini)",
             d: sch.bad + " baris · contoh " + sch.badEx.join(" | ")
         });
-        out.sort((x, y) => cmp(x.v[1], y.v[1]) || cmp(x.v[0], y.v[0]) || x.i - y.i);
-        const names = [ F_INST, F_SSF ].concat(D.cols.map(c => c.name));
+        out.sort((x, y) => cmp(x.v[1], y.v[1]) || asRank(x.v[2]) - asRank(y.v[2]) || cmp(x.v[0], y.v[0]) || x.i - y.i);
+        const names = [ F_INST, F_SSF, F_AS ].concat(D.cols.map(c => c.name));
+        const fi = n => names.map(nh).indexOf(nh(n));
         const rows = out.map(o => o.v);
-        const F = {};
-        [ [ "ca", CFG.INSTALLER_KEY ], [ "fs", "Field Service" ], [ "st", "Service Territory" ], [ "tt", "Task Type" ], [ "ts", "Task Status" ], [ "jt", "Job Task" ] ].forEach(p => F[p[0]] = names.map(nh).indexOf(nh(p[1])));
-        F.ssf = 1;
-        const cache = buildCache(names, rows);
-        const pivots = rows.length ? CFG.PIVOTS.map((pv, n) => calcPivot(pv, n, cache, F, alerts)) : [];
-        if (!rows.length) alerts.push({
+        const emerRows = rows.filter(r => r[2] === CFG.AS_EMER && nh(r[fi("Task Type")]) === nh(CFG.EMER_TASK_TYPE));
+        const caches = [ buildCache(names, rows, CFG.SHEET_DATA), buildCache(names, emerRows, CFG.SHEET_EMER) ];
+        const pivots = [];
+        if (rows.length) {
+            let col = 1;
+            CFG.PIVOTS.forEach((pv, n) => {
+                const p = calcPivot({
+                    name: pv.name,
+                    sheet: CFG.SHEET_PIVOT,
+                    cache: 0,
+                    row: 5,
+                    col: col,
+                    pages: [ {
+                        fi: fi("Task Type"),
+                        label: "Task Type",
+                        want: pv.taskType
+                    } ],
+                    rowF: fi("Service Territory"),
+                    colF: pv.cols.map(fi),
+                    dataF: fi(CFG.INSTALLER_KEY),
+                    dataName: "Count of " + CFG.INSTALLER_KEY,
+                    hi: [ fi(F_SSF), fi(F_AS) ]
+                }, caches[0], alerts);
+                pivots.push(p);
+                col = Math.max(9, col + p.width + 2);
+            });
+        } else alerts.push({
             t: "Hasil filter 0 baris",
-            d: "Sheet0 tetap dibuat, pivot dilewati"
+            d: "sheet data tetap dibuat, pivot dilewati"
         });
+        if (emerRows.length) pivots.push(calcPivot({
+            name: "Emergency Insert",
+            sheet: CFG.SHEET_EMER_PIVOT,
+            cache: 1,
+            row: 3,
+            col: 1,
+            pages: [],
+            rowF: fi("Service Territory"),
+            colF: [ fi(F_AS), fi("Field Service") ],
+            dataF: fi("Service Territory"),
+            dataName: "Count of Service Territory",
+            hi: [ fi(F_AS) ]
+        }, caches[1], alerts));
         const tally = {
             total: rows.length,
             absorb: rows.filter(r => r[1] === ABSORB).length,
+            emer: rows.filter(r => r[2] === CFG.AS_EMER).length,
+            feedback: rows.filter(r => r[2] === CFG.AS_FEEDBACK).length,
+            emerSheet: emerRows.length,
             fs: {}
         };
-        CFG.FIELD_SERVICE_INCLUDE.forEach(n => tally.fs[n] = rows.filter(r => nh(r[F.fs]) === nh(n)).length);
+        CFG.FIELD_SERVICE_INCLUDE.forEach(n => tally.fs[n] = rows.filter(r => nh(r[fi("Field Service")]) === nh(n)).length);
         return {
             names: names,
             rows: rows,
-            cache: cache,
-            F: F,
+            emerRows: emerRows,
+            caches: caches,
             pivots: pivots,
             alerts: alerts,
             tally: tally,
@@ -476,13 +526,11 @@
             sch: sch,
             upd: upd,
             skipped: skipped,
-            dName: D.name,
-            iName: I.name,
             dRows: D.rows.length,
             iRows: I.rows.length
         };
     }
-    function buildCache(names, rows) {
+    function buildCache(names, rows, sheet) {
         const fields = names.map(() => ({
             items: [],
             idx: new Map(),
@@ -521,95 +569,76 @@
         return {
             names: names,
             fields: fields,
-            recs: recs
+            recs: recs,
+            sheet: sheet
         };
     }
     function itemPos(cache, fi, value) {
         const s = cache.fields[fi].idx.get(low(value));
         return s == null ? -1 : cache.fields[fi].pos[s];
     }
-    function calcPivot(pv, n, cache, F, alerts) {
+    function calcPivot(p, cache, alerts) {
         const f = cache.fields;
-        const pages = [ {
-            fi: F.tt,
-            label: "Task Type",
-            want: pv.taskType
-        }, {
-            fi: F.jt,
-            label: "Job Task",
-            want: CFG.PIVOT_FILTER_DEFAULT.jobTask
-        }, {
-            fi: F.ts,
-            label: "Task Status",
-            want: CFG.PIVOT_FILTER_DEFAULT.taskStatus
-        } ].map(p => {
-            const all = p.want === "(All)";
-            const pos = all ? -1 : itemPos(cache, p.fi, p.want);
-            if (!all && pos < 0) alerts.push({
-                t: "Pivot " + pv.name + ": filter " + p.label + " = " + p.want + " nggak ada datanya",
+        p.pages = p.pages.map(g => {
+            const pos = itemPos(cache, g.fi, g.want);
+            if (pos < 0) alerts.push({
+                t: "Pivot " + p.name + ": filter " + g.label + " = " + g.want + " nggak ada datanya",
                 d: "filter dibiarkan (All)"
             });
             return {
-                fi: p.fi,
-                label: p.label,
+                fi: g.fi,
+                label: g.label,
                 pos: pos,
-                show: pos < 0 ? "(All)" : f[p.fi].items[f[p.fi].order[pos]]
+                show: pos < 0 ? "(All)" : f[g.fi].items[f[g.fi].order[pos]]
             };
         });
-        const recs = cache.recs.filter(r => pages.every(p => p.pos < 0 || f[p.fi].pos[r[p.fi]] === p.pos));
+        const recs = cache.recs.filter(r => p.pages.every(g => g.pos < 0 || f[g.fi].pos[r[g.fi]] === g.pos));
         const rowSet = new Set(), colMap = new Map(), cnt = new Map();
         recs.forEach(r => {
-            const rp = f[F.st].pos[r[F.st]], a = f[F.ssf].pos[r[F.ssf]], b = f[F.fs].pos[r[F.fs]];
+            const rp = f[p.rowF].pos[r[p.rowF]], cp = p.colF.map(c => f[c].pos[r[c]]), ck = cp.join("|");
             rowSet.add(rp);
-            const ck = a + "|" + b;
-            colMap.set(ck, [ a, b ]);
-            if (r[F.ca] === f[F.ca].blank) return;
+            colMap.set(ck, cp);
+            if (r[p.dataF] === f[p.dataF].blank) return;
             const k = rp + "#" + ck;
             cnt.set(k, (cnt.get(k) || 0) + 1);
         });
-        const rowsP = Array.from(rowSet).sort((x, y) => x - y);
-        const colsP = Array.from(colMap.values()).sort((x, y) => x[0] - y[0] || x[1] - y[1]);
-        const lbl = (fi, p) => {
-            const s = f[fi].order[p], v = f[fi].items[s];
+        const lbl = (fi, pos) => {
+            const v = f[fi].items[f[fi].order[pos]];
             return v === null ? "(blank)" : v;
         };
-        const grid = rowsP.map(rp => colsP.map(c => cnt.get(rp + "#" + c[0] + "|" + c[1]) || 0));
-        const naPos = itemPos(cache, F.ssf, NOT_ABSORB);
-        return {
-            n: n,
-            name: pv.name,
-            col: pv.col,
-            pages: pages,
-            rowsP: rowsP,
-            colsP: colsP,
-            grid: grid,
-            naPos: naPos,
-            rowLbl: rowsP.map(p => lbl(F.st, p)),
-            colLbl: colsP.map(c => [ lbl(F.ssf, c[0]), lbl(F.fs, c[1]) ]),
-            total: grid.reduce((s, r) => s + r.reduce((a, b) => a + b, 0), 0)
-        };
+        p.rowsP = Array.from(rowSet).sort((x, y) => x - y);
+        p.colsP = Array.from(colMap.values()).sort((x, y) => {
+            for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i];
+            return 0;
+        });
+        p.grid = p.rowsP.map(rp => p.colsP.map(c => cnt.get(rp + "#" + c.join("|")) || 0));
+        p.rowLbl = p.rowsP.map(x => lbl(p.rowF, x));
+        p.colLbl = p.colsP.map(c => c.map((x, i) => lbl(p.colF[i], x)));
+        p.total = p.grid.reduce((s, r) => s + r.reduce((a, b) => a + b, 0), 0);
+        p.width = p.colsP.length + 2;
+        p.height = p.colF.length + p.rowsP.length + 2;
+        return p;
     }
     function render() {
-        const r = res;
-        $("meta").textContent = r.tally.total + " baris · dari " + r.dRows + " baris Dispatching" + (r.upd ? " · mode update" : "");
+        const r = res, t = r.tally;
+        $("meta").textContent = t.total + " baris · dari " + r.dRows + " baris Dispatching" + (r.upd ? " · mode update" : "");
         const A = r.alerts;
         $("alerts").innerHTML = A.length ? '<div class="sf-alerts"><div class="ah">' + A.length + " hal perlu kamu lihat</div>" + A.map(a => '<div class="ai"><b>' + esc(a.t) + "</b> — <code>" + esc(a.d) + "</code></div>").join("") + "</div>" : "";
         const box = (n, l, c) => '<div class="' + (c || "") + '"><div class="n">' + n + '</div><div class="l">' + esc(l) + "</div></div>";
-        $("tally").innerHTML = box(r.tally.total, "Total baris") + box(r.tally.absorb, ABSORB, "ok") + box(r.tally.total - r.tally.absorb, NOT_ABSORB, "no") + CFG.FIELD_SERVICE_INCLUDE.map(k => box(r.tally.fs[k], k)).join("");
-        $("pv").innerHTML = r.pivots.length ? r.pivots.map(pvHtml).join("") : '<div class="sf-empty">Nggak ada baris yang lolos filter Field Service — pivot dilewati.</div>';
+        $("tally").innerHTML = box(t.total, "Total baris") + box(t.absorb, ABSORB, "ok") + box(t.total - t.absorb, NOT_ABSORB, "no") + box(t.emer, "Emergency Insert") + box(t.feedback, "Feedback Field") + CFG.FIELD_SERVICE_INCLUDE.map(k => box(t.fs[k], k)).join("");
+        $("pv").innerHTML = r.pivots.length ? r.pivots.map(pvHtml).join("") : '<div class="sf-empty">Nggak ada baris yang lolos filter — pivot dilewati.</div>';
         const bu = Object.keys(r.buang).map(k => k + " " + r.buang[k]).join(" · ");
         const u = r.upd;
-        $("pnote").innerHTML = "<b>Nama file:</b> " + esc(outName() + ".xlsx") + (u ? "<br><b>Update dari " + esc(u.name) + ":</b> " + u.lama + " baris lama diperbarui (INSTALLER berubah " + u.ganti + ", jadi ABSORB " + u.jadiAbsorb + ") · " + (u.lamaOut ? u.lamaOut + " baris lama dibuang karena Schedule Date H+1 dst · " : "") + u.baru + " baris baru ditambahkan · " + u.skip + " baris Dispatching dilewati karena Customer Account sudah ada" : "") + "<br><b>Dibuang (Field Service):</b> " + esc(bu || "tidak ada") + (r.sch.on ? "<br><b>Schedule Date H+1 dan seterusnya (mulai " + fmtDate(r.sch.date) + ") ditakeout:</b> " + r.sch.out + " baris" : "") +"<br><b>Inprogress:</b> " + r.iRows + " baris, " + r.skipped + " baris Dispatched dilewati saat lookup INSTALLER" + "<br><b>Pivot:</b> 2 PivotTable asli di " + CFG.SHEET_PIVOT + ", ditandai refresh-saat-dibuka. Angka final dihitung ulang oleh Excel waktu file dibuka.";
+        $("pnote").innerHTML = "<b>Nama file:</b> " + esc(outName() + ".xlsx") + (u ? "<br><b>Update dari " + esc(u.name) + ":</b> " + u.lama + " baris lama diperbarui (INSTALLER berubah " + u.ganti + ", jadi ABSORB " + u.jadiAbsorb + ", Emergency Insert baru " + u.emerBaru + ") · " + (u.lamaOut ? u.lamaOut + " baris lama dibuang karena Schedule Date H+1 dst · " : "") + u.baru + " baris baru ditambahkan · " + u.skip + " baris Dispatching dilewati karena Customer Account sudah ada" : "") + "<br><b>Dibuang (Field Service):</b> " + esc(bu || "tidak ada") + (r.sch.on ? "<br><b>Schedule Date H+1 dan seterusnya (mulai " + fmtDate(r.sch.date) + ") ditakeout:</b> " + r.sch.out + " baris" : "") + "<br><b>" + esc(CFG.SHEET_EMER) + ":</b> " + t.emerSheet + " baris (Regular Task, " + esc(CFG.AS_EMER) + ")" + "<br><b>Inprogress:</b> " + r.iRows + " baris, " + r.skipped + " baris Dispatched dilewati saat lookup INSTALLER" + "<br><b>Pivot:</b> PivotTable asli di " + esc(CFG.SHEET_PIVOT) + " dan " + esc(CFG.SHEET_EMER_PIVOT) + ", ditandai refresh-saat-dibuka. Angka final dihitung ulang oleh Excel waktu file dibuka.";
     }
     function pvHtml(p) {
-        const y = c => p.colsP[c][0] === p.naPos ? ' class="y"' : "";
-        let h = '<div class="sf-sect-t"><span>Pivot ' + esc(p.name) + "</span><span>" + p.pages.map(g => esc(g.label + ": " + g.show)).join(" · ") + "</span></div>";
+        let h = '<div class="sf-sect-t"><span>Pivot ' + esc(p.name) + "</span><span>" + (p.pages.length ? p.pages.map(g => esc(g.label + ": " + g.show)).join(" · ") : esc(p.sheet)) + "</span></div>";
         if (!p.rowsP.length) return h + '<div class="sf-empty">Nggak ada data untuk filter ini.</div>';
-        h += '<div class="sf-wrap"><table class="sf-tb"><thead><tr><th>Service Territory</th>' + p.colLbl.map((c, i) => "<th" + y(i) + ">" + esc(c[0]) + "<br>" + esc(c[1]) + "</th>").join("") + '<th class="gt">Grand Total</th></tr></thead><tbody>';
+        h += '<div class="sf-wrap"><table class="sf-tb"><thead><tr><th>Row Labels</th>' + p.colLbl.map(c => "<th>" + c.map(esc).join("<br>") + "</th>").join("") + '<th class="gt">Grand Total</th></tr></thead><tbody>';
         p.grid.forEach((row, ri) => {
-            h += "<tr><td>" + esc(p.rowLbl[ri]) + "</td>" + row.map((v, ci) => "<td" + y(ci) + ">" + (v || "") + "</td>").join("") + '<td class="gt">' + row.reduce((a, b) => a + b, 0) + "</td></tr>";
+            h += "<tr><td>" + esc(p.rowLbl[ri]) + "</td>" + row.map(v => "<td>" + (v || "") + "</td>").join("") + '<td class="gt">' + row.reduce((a, b) => a + b, 0) + "</td></tr>";
         });
-        h += '<tr class="gt"><td>Grand Total</td>' + p.colsP.map((_, ci) => "<td" + y(ci) + ">" + p.grid.reduce((s, row) => s + row[ci], 0) + "</td>").join("") + "<td>" + p.total + "</td></tr>";
+        h += '<tr class="gt"><td>Grand Total</td>' + p.colsP.map((_, ci) => "<td>" + p.grid.reduce((s, row) => s + row[ci], 0) + "</td>").join("") + "<td>" + p.total + "</td></tr>";
         return h + "</tbody></table></div>";
     }
     function stampOf(name) {
@@ -624,7 +653,7 @@
     const fmtDate = d => p2(d.getDate()) + "." + p2(d.getMonth() + 1) + "." + d.getFullYear();
     function outName() {
         const d = stampOf(files.dsp && files.dsp.name);
-        return "SCHEDULE FAILED TGL " + fmtDate(d) + " UPDATE JAM " + p2(d.getHours()) + "." + p2(d.getMinutes());
+        return "Schedule Failed tgl " + d.getDate() + " " + BULAN_PENDEK[d.getMonth() + 1] + " " + d.getFullYear() + " cut off " + p2(d.getHours()) + "." + p2(d.getMinutes());
     }
     $("save").addEventListener("click", async () => {
         const b = $("save");
@@ -643,7 +672,7 @@
     const thin = {
         style: "thin",
         color: {
-            argb: "FFBFBFBF"
+            argb: "FF000000"
         }
     };
     const box4 = {
@@ -656,7 +685,7 @@
         type: "pattern",
         pattern: "solid",
         fgColor: {
-            argb: CFG.HIGHLIGHT_NOT_ABSORB
+            argb: CFG.HIGHLIGHT
         }
     };
     const hFill = {
@@ -666,91 +695,74 @@
             argb: "FFDDEBF7"
         }
     };
-    function writeData(wb) {
-        const ws = wb.addWorksheet(CFG.SHEET_DATA);
+    function writeData(ws, rows) {
         ws.addRow(res.names);
-        res.rows.forEach(r => ws.addRow(r.map(v => v === "" ? null : v)));
-        ws.getRow(1).font = {
-            bold: true
-        };
+        rows.forEach(r => ws.addRow(r.map(v => v === "" ? null : v)));
+        [ 1, 2, 3 ].forEach(c => ws.getCell(1, c).fill = yFill);
+        ws.getColumn(1).width = 17.6;
+        ws.getColumn(2).width = 13;
+        ws.getColumn(3).width = 27.7;
+        ws.getColumn(4).width = 17.6;
         ws.autoFilter = {
             from: {
                 row: 1,
                 column: 1
             },
             to: {
-                row: Math.max(1, res.rows.length + 1),
+                row: Math.max(1, rows.length + 1),
                 column: res.names.length
             }
         };
     }
     function writePivotPreview(ws, p) {
-        const c0 = p.col;
-        p.pages.forEach((g, i) => {
-            ws.getCell(1 + i, c0).value = g.label;
-            ws.getCell(1 + i, c0).font = {
-                bold: true
-            };
-            ws.getCell(1 + i, c0 + 1).value = g.show;
-        });
-        const nC = p.colsP.length, last = c0 + nC + 1;
+        const c0 = p.col, r0 = p.row, N = p.colF.length, last = c0 + p.width - 1;
         const set = (r, c, v, st) => {
             const cell = ws.getCell(r, c);
             cell.value = v;
             cell.border = box4;
             if (st) Object.keys(st).forEach(k => cell[k] = st[k]);
-            return cell;
         };
-        const hd = {
-            font: {
-                bold: true
-            },
-            fill: hFill
-        };
-        const yc = ci => p.colsP[ci][0] === p.naPos;
-        set(5, c0, "Count of Customer Account", hd);
-        set(5, c0 + 1, F_SSF, hd);
-        if (nC > 1) set(5, c0 + 2, "Field Service", hd);
-        for (let c = c0 + 3; c <= last; c++) set(5, c, null, hd);
-        set(6, c0, null, hd);
-        set(7, c0, "Service Territory", hd);
-        p.colsP.forEach((cp, ci) => {
-            const st = yc(ci) ? {
-                font: {
-                    bold: true
-                },
+        p.pages.forEach((g, i) => {
+            const r = r0 - p.pages.length - 1 + i;
+            set(r, c0, g.label, {
                 fill: yFill
-            } : hd;
-            set(6, c0 + 1 + ci, ci === 0 || p.colsP[ci - 1][0] !== cp[0] ? p.colLbl[ci][0] : null, st);
-            set(7, c0 + 1 + ci, p.colLbl[ci][1], st);
-        });
-        set(6, last, "Grand Total", hd);
-        set(7, last, null, hd);
-        p.grid.forEach((row, ri) => {
-            const r = 8 + ri;
-            set(r, c0, p.rowLbl[ri]);
-            row.forEach((v, ci) => set(r, c0 + 1 + ci, v || null, yc(ci) ? {
+            });
+            set(r, c0 + 1, g.show, {
                 fill: yFill
-            } : null));
-            set(r, last, row.reduce((a, b) => a + b, 0), {
-                font: {
-                    bold: true
-                }
             });
         });
-        const gr = 8 + p.grid.length, bold = {
+        const bold = {
             font: {
                 bold: true
             },
             fill: hFill
         };
+        set(r0, c0, p.dataName, bold);
+        set(r0, c0 + 1, "Column Labels", bold);
+        for (let c = c0 + 2; c <= last; c++) set(r0, c, null, bold);
+        for (let L = 0; L < N; L++) {
+            const r = r0 + 1 + L, hi = p.hi.indexOf(p.colF[L]) >= 0;
+            set(r, c0, L === N - 1 ? "Row Labels" : null, bold);
+            p.colsP.forEach((cp, ci) => {
+                const first = ci === 0 || p.colsP[ci - 1].slice(0, L + 1).join("|") !== cp.slice(0, L + 1).join("|");
+                set(r, c0 + 1 + ci, first ? p.colLbl[ci][L] : null, first && hi ? {
+                    font: {
+                        bold: true
+                    },
+                    fill: yFill
+                } : bold);
+            });
+            set(r, last, L === 0 ? "Grand Total" : null, bold);
+        }
+        p.grid.forEach((row, ri) => {
+            const r = r0 + N + 1 + ri;
+            set(r, c0, p.rowLbl[ri]);
+            row.forEach((v, ci) => set(r, c0 + 1 + ci, v || null));
+            set(r, last, row.reduce((a, b) => a + b, 0));
+        });
+        const gr = r0 + N + 1 + p.grid.length;
         set(gr, c0, "Grand Total", bold);
-        p.colsP.forEach((_, ci) => set(gr, c0 + 1 + ci, p.grid.reduce((s, row) => s + row[ci], 0), yc(ci) ? {
-            font: {
-                bold: true
-            },
-            fill: yFill
-        } : bold));
+        p.colsP.forEach((_, ci) => set(gr, c0 + 1 + ci, p.grid.reduce((s, row) => s + row[ci], 0), bold));
         set(gr, last, p.total, bold);
         ws.getColumn(c0).width = 28;
     }
@@ -758,9 +770,17 @@
         const wb = new ExcelJS.Workbook;
         wb.creator = "Dispatch Report";
         wb.modified = new Date;
-        const pws = wb.addWorksheet(CFG.SHEET_PIVOT);
-        res.pivots.forEach(p => writePivotPreview(pws, p));
-        writeData(wb);
+        const wsPv = wb.addWorksheet(CFG.SHEET_PIVOT), wsEp = wb.addWorksheet(CFG.SHEET_EMER_PIVOT);
+        const wsEm = wb.addWorksheet(CFG.SHEET_EMER), wsData = wb.addWorksheet(CFG.SHEET_DATA);
+        const t = wsEp.getCell(2, 1);
+        t.value = CFG.EMER_TITLE;
+        t.font = {
+            bold: true
+        };
+        t.fill = yFill;
+        res.pivots.forEach(p => writePivotPreview(p.sheet === CFG.SHEET_PIVOT ? wsPv : wsEp, p));
+        writeData(wsEm, res.emerRows);
+        writeData(wsData, res.rows);
         let buf = await wb.xlsx.writeBuffer();
         if (res.pivots.length) buf = await addPivots(buf);
         const blob = new Blob([ buf ], {
@@ -774,7 +794,7 @@
         document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(a.href), 4e3);
     }
-    function cacheDefXml(cache, nRows) {
+    function cacheDefXml(cache) {
         const fx = cache.fields.map((f, i) => {
             const strs = f.items.filter(v => v !== null).length;
             let at = "";
@@ -783,36 +803,36 @@
             if (f.longText) at += ' longText="1"';
             return '<cacheField name="' + xe(cache.names[i]) + '" numFmtId="0"><sharedItems' + at + ' count="' + f.items.length + '">' + f.items.map(v => v === null ? "<m/>" : '<s v="' + xe(v) + '"/>').join("") + "</sharedItems></cacheField>";
         }).join("");
-        const ref = "A1:" + cname(cache.names.length) + (nRows + 1);
-        return DECL + '<pivotCacheDefinition xmlns="' + NS + '" xmlns:r="' + RNS + '" r:id="rId1" refreshOnLoad="1" refreshedBy="Dispatch Report" createdVersion="6" refreshedVersion="6" minRefreshableVersion="3" recordCount="' + cache.recs.length + '"><cacheSource type="worksheet"><worksheetSource ref="' + ref + '" sheet="' + xe(CFG.SHEET_DATA) + '"/></cacheSource><cacheFields count="' + cache.names.length + '">' + fx + "</cacheFields></pivotCacheDefinition>";
+        const ref = "A1:" + cname(cache.names.length) + (cache.recs.length + 1);
+        return DECL + '<pivotCacheDefinition xmlns="' + NS + '" xmlns:r="' + RNS + '" r:id="rId1" refreshOnLoad="1" refreshedBy="Dispatch Report" createdVersion="6" refreshedVersion="6" minRefreshableVersion="3" recordCount="' + cache.recs.length + '"><cacheSource type="worksheet"><worksheetSource ref="' + ref + '" sheet="' + xe(cache.sheet) + '"/></cacheSource><cacheFields count="' + cache.names.length + '">' + fx + "</cacheFields></pivotCacheDefinition>";
     }
     function cacheRecXml(cache) {
         return DECL + '<pivotCacheRecords xmlns="' + NS + '" xmlns:r="' + RNS + '" count="' + cache.recs.length + '">' + cache.recs.map(r => "<r>" + r.map(x => '<x v="' + x + '"/>').join("") + "</r>").join("") + "</pivotCacheRecords>";
     }
-    function pivotXml(p, cache, F, dxfId) {
-        const f = cache.fields;
+    function pivotXml(p, n, cache, cacheId, dxf) {
+        const f = cache.fields, N = p.colF.length;
         const axis = {};
-        axis[F.st] = "axisRow";
-        axis[F.ssf] = "axisCol";
-        axis[F.fs] = "axisCol";
+        axis[p.rowF] = "axisRow";
+        p.colF.forEach(c => axis[c] = "axisCol");
         p.pages.forEach(g => axis[g.fi] = "axisPage");
         const pf = cache.names.map((_, i) => {
-            if (axis[i]) return '<pivotField axis="' + axis[i] + '" compact="0" outline="0" showAll="0" defaultSubtotal="0" sortType="ascending"><items count="' + f[i].order.length + '">' + f[i].order.map(s => '<item x="' + s + '"/>').join("") + "</items></pivotField>";
-            if (i === F.ca) return '<pivotField dataField="1" compact="0" outline="0" showAll="0"/>';
-            return '<pivotField compact="0" outline="0" showAll="0"/>';
+            const data = i === p.dataF ? ' dataField="1"' : "";
+            if (axis[i]) return '<pivotField axis="' + axis[i] + '"' + data + ' showAll="0" defaultSubtotal="0" sortType="ascending"><items count="' + f[i].order.length + '">' + f[i].order.map(s => '<item x="' + s + '"/>').join("") + "</items></pivotField>";
+            return "<pivotField" + data + ' showAll="0"/>';
         }).join("");
         const rowItems = p.rowsP.map(r => '<i><x v="' + r + '"/></i>').join("") + '<i t="grand"><x/></i>';
-        const colItems = p.colsP.map((c, i) => i > 0 && p.colsP[i - 1][0] === c[0] ? '<i r="1"><x v="' + c[1] + '"/></i>' : '<i><x v="' + c[0] + '"/><x v="' + c[1] + '"/></i>').join("") + '<i t="grand"><x/></i>';
-        const c0 = p.col, lastC = c0 + p.colsP.length + 1, lastR = 7 + p.rowsP.length + 1;
-        const loc = '<location ref="' + cname(c0) + "5:" + cname(lastC) + lastR + '" firstHeaderRow="1" firstDataRow="3" firstDataCol="1" rowPageCount="3" colPageCount="1"/>';
-        const pages = p.pages.map(g => '<pageField fld="' + g.fi + '"' + (g.pos >= 0 ? ' item="' + g.pos + '"' : "") + ' hier="-1"/>').join("");
-        let formats = "";
-        if (dxfId != null && p.naPos >= 0) {
-            const na = '<reference field="' + F.ssf + '" count="1" selected="0"><x v="' + p.naPos + '"/></reference>';
-            const fsAll = '<reference field="' + F.fs + '" count="' + f[F.fs].order.length + '" selected="0">' + f[F.fs].order.map((_, i) => '<x v="' + i + '"/>').join("") + "</reference>";
-            formats = '<formats count="3"><format dxfId="' + dxfId + '"><pivotArea outline="0" collapsedLevelsAreSubtotals="1" fieldPosition="0"><references count="1">' + na + '</references></pivotArea></format><format dxfId="' + dxfId + '"><pivotArea dataOnly="0" labelOnly="1" outline="0" fieldPosition="0"><references count="1">' + na + '</references></pivotArea></format><format dxfId="' + dxfId + '"><pivotArea dataOnly="0" labelOnly="1" outline="0" fieldPosition="0"><references count="2">' + na + fsAll + "</references></pivotArea></format></formats>";
-        }
-        return DECL + '<pivotTableDefinition xmlns="' + NS + '" name="PivotTable' + (p.n + 1) + '" cacheId="1" applyNumberFormats="0" applyBorderFormats="0" applyFontFormats="0" applyPatternFormats="0" applyAlignmentFormats="0" applyWidthHeightFormats="1" dataCaption="Values" updatedVersion="6" minRefreshableVersion="3" useAutoFormatting="1" itemPrintTitles="1" createdVersion="6" indent="0" compact="0" compactData="0" outline="1" outlineData="1" multipleFieldFilters="0">' + loc + '<pivotFields count="' + cache.names.length + '">' + pf + '</pivotFields><rowFields count="1"><field x="' + F.st + '"/></rowFields><rowItems count="' + (p.rowsP.length + 1) + '">' + rowItems + '</rowItems><colFields count="2"><field x="' + F.ssf + '"/><field x="' + F.fs + '"/></colFields><colItems count="' + (p.colsP.length + 1) + '">' + colItems + '</colItems><pageFields count="3">' + pages + '</pageFields><dataFields count="1"><dataField name="Count of Customer Account" fld="' + F.ca + '" subtotal="count" baseField="0" baseItem="0"/></dataFields>' + formats + '<pivotTableStyleInfo name="PivotStyleLight16" showRowHeaders="1" showColHeaders="1" showRowStripes="0" showColStripes="0" showLastColumn="1"/></pivotTableDefinition>';
+        const colItems = p.colsP.map((c, i) => {
+            let k = 0;
+            if (i > 0) while (k < N - 1 && p.colsP[i - 1][k] === c[k]) k++;
+            return "<i" + (k ? ' r="' + k + '"' : "") + ">" + c.slice(k).map(x => '<x v="' + x + '"/>').join("") + "</i>";
+        }).join("") + '<i t="grand"><x/></i>';
+        const lastC = p.col + p.width - 1, lastR = p.row + p.height - 1;
+        const pc = p.pages.length ? ' rowPageCount="' + p.pages.length + '" colPageCount="1"' : "";
+        const loc = '<location ref="' + cname(p.col) + p.row + ":" + cname(lastC) + lastR + '" firstHeaderRow="1" firstDataRow="' + (N + 1) + '" firstDataCol="1"' + pc + "/>";
+        const pages = p.pages.length ? '<pageFields count="' + p.pages.length + '">' + p.pages.map(g => '<pageField fld="' + g.fi + '"' + (g.pos >= 0 ? ' item="' + g.pos + '"' : "") + ' hier="-1"/>').join("") + "</pageFields>" : "";
+        const fm = [ '<format dxfId="' + dxf.border + '"><pivotArea type="all" dataOnly="0" outline="0" fieldPosition="0"/></format>' ];
+        p.hi.filter(h => p.colF.indexOf(h) >= 0).forEach(h => fm.push('<format dxfId="' + dxf.yellow + '"><pivotArea dataOnly="0" labelOnly="1" outline="0" fieldPosition="0"><references count="1"><reference field="' + h + '" count="0"/></references></pivotArea></format>'));
+        return DECL + '<pivotTableDefinition xmlns="' + NS + '" name="PivotTable' + n + '" cacheId="' + cacheId + '" applyNumberFormats="0" applyBorderFormats="0" applyFontFormats="0" applyPatternFormats="0" applyAlignmentFormats="0" applyWidthHeightFormats="1" dataCaption="Values" updatedVersion="6" minRefreshableVersion="3" useAutoFormatting="1" itemPrintTitles="1" createdVersion="6" indent="0" outline="1" outlineData="1" multipleFieldFilters="0">' + loc + '<pivotFields count="' + cache.names.length + '">' + pf + '</pivotFields><rowFields count="1"><field x="' + p.rowF + '"/></rowFields><rowItems count="' + (p.rowsP.length + 1) + '">' + rowItems + '</rowItems><colFields count="' + N + '">' + p.colF.map(c => '<field x="' + c + '"/>').join("") + '</colFields><colItems count="' + (p.colsP.length + 1) + '">' + colItems + "</colItems>" + pages + '<dataFields count="1"><dataField name="' + xe(p.dataName) + '" fld="' + p.dataF + '" subtotal="count" baseField="0" baseItem="0"/></dataFields><formats count="' + fm.length + '">' + fm.join("") + '</formats><pivotTableStyleInfo name="PivotStyleLight16" showRowHeaders="1" showColHeaders="1" showRowStripes="0" showColStripes="0" showLastColumn="1"/></pivotTableDefinition>';
     }
     function relsXml(list) {
         return DECL + '<Relationships xmlns="' + PNS + '">' + list.map(r => '<Relationship Id="' + r[0] + '" Type="' + RNS + "/" + r[1] + '" Target="' + r[2] + '"/>').join("") + "</Relationships>";
@@ -831,7 +851,7 @@
         while (used[base + i]) i++;
         return base + i;
     }
-    async function addDxf(zip) {
+    async function addDxfs(zip) {
         const d = parseXml(await zip.file("xl/styles.xml").async("string"));
         let dx = els(d, "dxfs")[0];
         if (!dx) {
@@ -839,17 +859,37 @@
             const after = [ "tableStyles", "colors", "extLst" ].map(t => kids(d.documentElement, t)[0]).filter(Boolean)[0];
             d.documentElement.insertBefore(dx, after || null);
         }
-        const x = d.createElementNS(NS, "dxf"), fl = d.createElementNS(NS, "fill"), pf = d.createElementNS(NS, "patternFill"), bg = d.createElementNS(NS, "bgColor");
-        pf.setAttribute("patternType", "solid");
-        bg.setAttribute("rgb", CFG.HIGHLIGHT_NOT_ABSORB);
-        pf.appendChild(bg);
-        fl.appendChild(pf);
-        x.appendChild(fl);
-        dx.appendChild(x);
-        const id = kids(dx, "dxf").length - 1;
-        dx.setAttribute("count", String(id + 1));
+        const mk = (tag, kids2) => {
+            const e = d.createElementNS(NS, tag);
+            kids2.forEach(k => e.appendChild(k));
+            return e;
+        };
+        const at = (e, a) => {
+            Object.keys(a).forEach(k => e.setAttribute(k, a[k]));
+            return e;
+        };
+        const add = x => {
+            dx.appendChild(x);
+            const id = kids(dx, "dxf").length - 1;
+            dx.setAttribute("count", String(id + 1));
+            return id;
+        };
+        const yellow = add(mk("dxf", [ mk("fill", [ at(mk("patternFill", [ at(mk("bgColor", []), {
+            rgb: CFG.HIGHLIGHT
+        }) ]), {
+            patternType: "solid"
+        }) ]) ]));
+        const side = t => at(mk(t, [ at(mk("color", []), {
+            auto: "1"
+        }) ]), {
+            style: "thin"
+        });
+        const border = add(mk("dxf", [ mk("border", [ side("left"), side("right"), side("top"), side("bottom") ]) ]));
         zip.file("xl/styles.xml", ser(d));
-        return id;
+        return {
+            yellow: yellow,
+            border: border
+        };
     }
     async function addPivots(buf) {
         const zip = await JSZip.loadAsync(buf);
@@ -857,33 +897,52 @@
         const wbDoc = parseXml(await zip.file("xl/workbook.xml").async("string"));
         const target = {};
         els(wbRels, "Relationship").forEach(r => target[r.getAttribute("Id")] = r.getAttribute("Target"));
-        const sh = els(wbDoc, "sheet").filter(s => s.getAttribute("name") === CFG.SHEET_PIVOT)[0];
-        if (!sh) throw new Error("sheet " + CFG.SHEET_PIVOT + " nggak ketemu di workbook");
-        let t = (target[sh.getAttributeNS(RNS, "id") || sh.getAttribute("r:id")] || "").replace(/^\.\//, "");
-        const sPath = t.charAt(0) === "/" ? t.slice(1) : "xl/" + t;
-        const cache = res.cache, F = res.F;
-        zip.file("xl/pivotCache/pivotCacheDefinition1.xml", cacheDefXml(cache, res.rows.length));
-        zip.file("xl/pivotCache/pivotCacheRecords1.xml", cacheRecXml(cache));
-        zip.file("xl/pivotCache/_rels/pivotCacheDefinition1.xml.rels", relsXml([ [ "rId1", "pivotCacheRecords", "pivotCacheRecords1.xml" ] ]));
-        const dxfId = await addDxf(zip);
-        const sRelPath = sPath.replace(/([^\/]+)$/, "_rels/$1.rels");
-        const sf = zip.file(sRelPath);
-        const sRels = parseXml(sf ? await sf.async("string") : relsXml([]));
-        res.pivots.forEach((p, i) => {
-            const nm = "pivotTable" + (i + 1) + ".xml";
-            zip.file("xl/pivotTables/" + nm, pivotXml(p, cache, F, dxfId));
-            zip.file("xl/pivotTables/_rels/" + nm + ".rels", relsXml([ [ "rId1", "pivotCacheDefinition", "../pivotCache/pivotCacheDefinition1.xml" ] ]));
-            addRel(sRels, freeId(sRels, "rIdPv"), "pivotTable", "../pivotTables/" + nm);
+        const sheetPath = name => {
+            const sh = els(wbDoc, "sheet").filter(s => s.getAttribute("name") === name)[0];
+            if (!sh) throw new Error("sheet " + name + " nggak ketemu di workbook");
+            const t = (target[sh.getAttributeNS(RNS, "id") || sh.getAttribute("r:id")] || "").replace(/^\.\//, "");
+            return t.charAt(0) === "/" ? t.slice(1) : "xl/" + t;
+        };
+        const dxf = await addDxfs(zip);
+        const used = res.caches.map((_, i) => res.pivots.some(p => p.cache === i));
+        const root = wbDoc.documentElement, pcs = wbDoc.createElementNS(NS, "pivotCaches");
+        const ct = parseXml(await zip.file("[Content_Types].xml").async("string"));
+        const ov = (part, type) => {
+            const o = ct.createElementNS(CNS, "Override");
+            o.setAttribute("PartName", part);
+            o.setAttribute("ContentType", CT + type + "+xml");
+            ct.documentElement.appendChild(o);
+        };
+        res.caches.forEach((cache, i) => {
+            if (!used[i]) return;
+            const k = i + 1, def = "pivotCacheDefinition" + k + ".xml", rec = "pivotCacheRecords" + k + ".xml";
+            zip.file("xl/pivotCache/" + def, cacheDefXml(cache));
+            zip.file("xl/pivotCache/" + rec, cacheRecXml(cache));
+            zip.file("xl/pivotCache/_rels/" + def + ".rels", relsXml([ [ "rId1", "pivotCacheRecords", rec ] ]));
+            const id = freeId(wbRels, "rIdPc");
+            addRel(wbRels, id, "pivotCacheDefinition", "pivotCache/" + def);
+            const pc = wbDoc.createElementNS(NS, "pivotCache");
+            pc.setAttribute("cacheId", String(k));
+            pc.setAttributeNS(RNS, "r:id", id);
+            pcs.appendChild(pc);
+            ov("/xl/pivotCache/" + def, "pivotCacheDefinition");
+            ov("/xl/pivotCache/" + rec, "pivotCacheRecords");
         });
-        zip.file(sRelPath, ser(sRels));
-        const pcId = freeId(wbRels, "rIdPc");
-        addRel(wbRels, pcId, "pivotCacheDefinition", "pivotCache/pivotCacheDefinition1.xml");
+        const sRels = {};
+        for (let i = 0; i < res.pivots.length; i++) {
+            const p = res.pivots[i], nm = "pivotTable" + (i + 1) + ".xml", k = p.cache + 1;
+            const sPath = sheetPath(p.sheet), rp = sPath.replace(/([^\/]+)$/, "_rels/$1.rels");
+            if (!sRels[rp]) {
+                const sf = zip.file(rp);
+                sRels[rp] = parseXml(sf ? await sf.async("string") : relsXml([]));
+            }
+            zip.file("xl/pivotTables/" + nm, pivotXml(p, i + 1, res.caches[p.cache], k, dxf));
+            zip.file("xl/pivotTables/_rels/" + nm + ".rels", relsXml([ [ "rId1", "pivotCacheDefinition", "../pivotCache/pivotCacheDefinition" + k + ".xml" ] ]));
+            addRel(sRels[rp], freeId(sRels[rp], "rIdPv"), "pivotTable", "../pivotTables/" + nm);
+            ov("/xl/pivotTables/" + nm, "pivotTable");
+        }
+        Object.keys(sRels).forEach(rp => zip.file(rp, ser(sRels[rp])));
         zip.file("xl/_rels/workbook.xml.rels", ser(wbRels));
-        const root = wbDoc.documentElement;
-        const pcs = wbDoc.createElementNS(NS, "pivotCaches"), pc = wbDoc.createElementNS(NS, "pivotCache");
-        pc.setAttribute("cacheId", "1");
-        pc.setAttributeNS(RNS, "r:id", pcId);
-        pcs.appendChild(pc);
         const later = [ "smartTagPr", "smartTagTypes", "webPublishing", "fileRecoveryPr", "webPublishObjects", "extLst" ];
         let before = null;
         for (let n = root.firstElementChild; n; n = n.nextElementSibling) if (later.indexOf(n.localName) >= 0) {
@@ -892,16 +951,6 @@
         }
         root.insertBefore(pcs, before);
         zip.file("xl/workbook.xml", ser(wbDoc));
-        const ct = parseXml(await zip.file("[Content_Types].xml").async("string"));
-        const ov = (part, type) => {
-            const o = ct.createElementNS(CNS, "Override");
-            o.setAttribute("PartName", part);
-            o.setAttribute("ContentType", CT + type + "+xml");
-            ct.documentElement.appendChild(o);
-        };
-        ov("/xl/pivotCache/pivotCacheDefinition1.xml", "pivotCacheDefinition");
-        ov("/xl/pivotCache/pivotCacheRecords1.xml", "pivotCacheRecords");
-        res.pivots.forEach((_, i) => ov("/xl/pivotTables/pivotTable" + (i + 1) + ".xml", "pivotTable"));
         zip.file("[Content_Types].xml", ser(ct));
         return zip.generateAsync({
             type: "arraybuffer",
