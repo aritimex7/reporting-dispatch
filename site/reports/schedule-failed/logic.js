@@ -8,6 +8,7 @@
         INSTALLER_SOURCE_COL: "Techician Code",
         INSTALLER_EXCLUDE_STATUS: [ "Dispatched" ],
         INSTALLER_EMPTY: "-",
+        PREV_KEEP_INSTALLER: true,
         PIVOTS: [ {
             name: "Regular",
             col: 1,
@@ -82,6 +83,7 @@
         const x = low(a), y = low(b);
         return x < y ? -1 : x > y ? 1 : 0;
     };
+    const ssfOf = inst => inst === "" || inst === "-" ? NOT_ABSORB : ABSORB;
     async function readBook(file, sheetRows) {
         return XLSX.read(new Uint8Array(await file.arrayBuffer()), sheetRows ? {
             type: "array",
@@ -140,9 +142,28 @@
         const c = t.cols.filter(x => nh(x.name) === nh(name))[0];
         return c ? c.src : -1;
     }
+    const isPrevHdr = hdr => [ F_INST, F_SSF, CFG.INSTALLER_KEY ].every(n => hdr.indexOf(nh(n)) >= 0);
+    async function readPrev(file) {
+        const wb = await readBook(file);
+        for (const sn of wb.SheetNames) {
+            const aoa = aoaOf(wb.Sheets[sn]);
+            if (!aoa.length || !isPrevHdr(aoa[0].map(nh))) continue;
+            const hdr = aoa[0].map(clean), idx = {};
+            hdr.forEach((h, i) => {
+                if (h && idx[nh(h)] == null) idx[nh(h)] = i;
+            });
+            return {
+                idx: idx,
+                rows: aoa.slice(1).filter(a => a.some(x => String(x).trim() !== "")),
+                name: file.name
+            };
+        }
+        throw new Error(file.name + ": sheet data (kolom INSTALLER, Status SF, Customer Account) nggak ketemu — pastikan ini file output Schedule Failed");
+    }
     const files = {
         dsp: null,
-        inp: null
+        inp: null,
+        prv: null
     };
     let pend = null;
     async function sniff(file) {
@@ -157,6 +178,7 @@
             if (!aoa.length) continue;
             const hdr = aoa[0].map(nh), has = n => hdr.indexOf(nh(n)) >= 0;
             if (has("Techician Code") && has("Customer Account")) return "inp";
+            if (isPrevHdr(hdr)) return "prv";
             if (has("Customer Account") && has("Field Service") && !has("Arrival Time")) return "dsp";
         }
         return null;
@@ -281,12 +303,52 @@
             });
             const t = tech.get(clean(a[dAcct]));
             const inst = t ? t : CFG.INSTALLER_EMPTY;
-            const ssf = inst === "" || inst === "-" ? NOT_ABSORB : ABSORB;
             out.push({
-                v: [ inst, ssf ].concat(vals),
-                i: out.length
+                v: [ inst, ssfOf(inst) ].concat(vals),
+                i: out.length,
+                acct: clean(a[dAcct])
             });
         });
+        let upd = null;
+        if (files.prv) {
+            const P = await readPrev(files.prv), pi = P.idx;
+            const pAcct = pi[nh(CFG.INSTALLER_KEY)], pInst = pi[nh(F_INST)], pSsf = pi[nh(F_SSF)];
+            const miss = D.cols.filter(c => pi[nh(c.name)] == null).map(c => c.name);
+            if (miss.length) alerts.push({
+                t: "Kolom di output lama nggak lengkap, dibiarkan kosong untuk baris lama",
+                d: miss.join(", ")
+            });
+            const lama = new Set();
+            const old = P.rows.map((a, i) => {
+                const acct = clean(a[pAcct]);
+                lama.add(acct);
+                const vals = D.cols.map(c => {
+                    const j = pi[nh(c.name)], v = j == null ? "" : a[j];
+                    return trim[c.src] ? clean(v) : v == null ? "" : String(v);
+                });
+                const before = clean(a[pInst]) || CFG.INSTALLER_EMPTY, t = tech.get(acct);
+                const inst = t ? t : CFG.PREV_KEEP_INSTALLER ? before : CFG.INSTALLER_EMPTY;
+                return {
+                    v: [ inst, ssfOf(inst) ].concat(vals),
+                    i: i,
+                    acct: acct,
+                    before: before,
+                    ssfBefore: clean(a[pSsf])
+                };
+            });
+            const baru = out.filter(o => !lama.has(o.acct));
+            upd = {
+                name: P.name,
+                lama: old.length,
+                baru: baru.length,
+                skip: out.length - baru.length,
+                ganti: old.filter(o => o.v[0] !== o.before).length,
+                jadiAbsorb: old.filter(o => o.v[1] === ABSORB && o.ssfBefore !== ABSORB).length
+            };
+            baru.forEach((o, k) => o.i = old.length + k);
+            out.length = 0;
+            old.concat(baru).forEach(o => out.push(o));
+        }
         out.sort((x, y) => cmp(x.v[1], y.v[1]) || cmp(x.v[0], y.v[0]) || x.i - y.i);
         const names = [ F_INST, F_SSF ].concat(D.cols.map(c => c.name));
         const rows = out.map(o => o.v);
@@ -314,6 +376,7 @@
             alerts: alerts,
             tally: tally,
             buang: buang,
+            upd: upd,
             skipped: skipped,
             dName: D.name,
             iName: I.name,
@@ -430,14 +493,15 @@
     }
     function render() {
         const r = res;
-        $("meta").textContent = r.tally.total + " baris · dari " + r.dRows + " baris Dispatching";
+        $("meta").textContent = r.tally.total + " baris · dari " + r.dRows + " baris Dispatching" + (r.upd ? " · mode update" : "");
         const A = r.alerts;
         $("alerts").innerHTML = A.length ? '<div class="sf-alerts"><div class="ah">' + A.length + " hal perlu kamu lihat</div>" + A.map(a => '<div class="ai"><b>' + esc(a.t) + "</b> — <code>" + esc(a.d) + "</code></div>").join("") + "</div>" : "";
         const box = (n, l, c) => '<div class="' + (c || "") + '"><div class="n">' + n + '</div><div class="l">' + esc(l) + "</div></div>";
         $("tally").innerHTML = box(r.tally.total, "Total baris") + box(r.tally.absorb, ABSORB, "ok") + box(r.tally.total - r.tally.absorb, NOT_ABSORB, "no") + CFG.FIELD_SERVICE_INCLUDE.map(k => box(r.tally.fs[k], k)).join("");
         $("pv").innerHTML = r.pivots.length ? r.pivots.map(pvHtml).join("") : '<div class="sf-empty">Nggak ada baris yang lolos filter Field Service — pivot dilewati.</div>';
         const bu = Object.keys(r.buang).map(k => k + " " + r.buang[k]).join(" · ");
-        $("pnote").innerHTML = "<b>Nama file:</b> " + esc(outName() + ".xlsx") + "<br><b>Dibuang (Field Service):</b> " + esc(bu || "tidak ada") + "<br><b>Inprogress:</b> " + r.iRows + " baris, " + r.skipped + " baris Dispatched dilewati saat lookup INSTALLER" + "<br><b>Pivot:</b> 2 PivotTable asli di " + CFG.SHEET_PIVOT + ", ditandai refresh-saat-dibuka. Angka final dihitung ulang oleh Excel waktu file dibuka.";
+        const u = r.upd;
+        $("pnote").innerHTML = "<b>Nama file:</b> " + esc(outName() + ".xlsx") + (u ? "<br><b>Update dari " + esc(u.name) + ":</b> " + u.lama + " baris lama diperbarui (INSTALLER berubah " + u.ganti + ", jadi ABSORB " + u.jadiAbsorb + ") · " + u.baru + " baris baru ditambahkan · " + u.skip + " baris Dispatching dilewati karena Customer Account sudah ada" : "") + "<br><b>Dibuang (Field Service):</b> " + esc(bu || "tidak ada") + "<br><b>Inprogress:</b> " + r.iRows + " baris, " + r.skipped + " baris Dispatched dilewati saat lookup INSTALLER" + "<br><b>Pivot:</b> 2 PivotTable asli di " + CFG.SHEET_PIVOT + ", ditandai refresh-saat-dibuka. Angka final dihitung ulang oleh Excel waktu file dibuka.";
     }
     function pvHtml(p) {
         const y = c => p.colsP[c][0] === p.naPos ? ' class="y"' : "";
